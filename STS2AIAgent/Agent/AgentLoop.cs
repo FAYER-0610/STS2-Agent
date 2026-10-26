@@ -182,8 +182,27 @@ internal sealed partial class AgentLoop
         // A player's one-shot instruction must reach the very next decision, not be skipped by a
         // confident Jev action. This turn uses the regular model when guidance is queued.
         var playInstruction = _peekPlayInstruction?.Invoke(stateJson);
+        // Local patch: the rest of a planned combat turn plays without a model call while it still
+        // holds. Queued player guidance outranks the plan; a new viewer suggestion steers it -- the
+        // model gets the unplayed steps and the suggestion and edits the plan.
+        _guidance = await ReadGuidanceAsync(cancellationToken);
+        var steered = _guidance is { Items.Count: > 0 } board && board.Version != _guidanceSeen;
+        if (playInstruction != null)
+        {
+            _turnPlan = null;
+            _steer = null;
+        }
+        else if (steered && _turnPlan != null)
+        {
+            DropTurnPlan(stateJson, "a viewer just made a suggestion (see the live viewer suggestions).");
+        }
+        else if (await TryPlannedStepAsync(stateJson, cancellationToken, checkState, reportPhase) is { } planned)
+        {
+            return planned;
+        }
+
         var pending = new AgentTurnResult { RequestsSpent = 0 };
-        if (playInstruction == null && dualLayerOn && ResolveDecider() is { } decider && _strategyStore is { } store)
+        if (playInstruction == null && !steered && _steer == null && dualLayerOn && ResolveDecider() is { } decider && _strategyStore is { } store)
         {
             reportPhase?.Invoke(PlayPhases.AskingJev);
             pending = await TryDecideWithJevAsync(decider, store, cancellationToken, checkState, reportPhase, observeDecider);
@@ -336,6 +355,11 @@ internal sealed partial class AgentLoop
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 rounds = round + 1;
+                if (round > 0 && allowAct && stopAfterAct && acted == null)
+                {
+                    await SteerWithNewGuidanceAsync(messages, cancellationToken);
+                }
+
                 var request = new LlmRequest
                 {
                     Model = resolved.Model.Model,
@@ -434,6 +458,7 @@ internal sealed partial class AgentLoop
                             (action, response) => RememberAccepted(action, response, fallbackReason));
                         if (parsedAct.Error == null)
                         {
+                            RememberTurnPlan(stopAfterAct ? actJson : "{}");
                             // The provider's reasoning_content (already in lastReasoning from this
                             // completion) is the thinking; the act-args reason only fills the gap
                             // when the provider sent none.
@@ -514,6 +539,7 @@ internal sealed partial class AgentLoop
                         messages.Add(LlmMessage.Tool(call.Id, actOutcome.ResultJson));
                         if (actOutcome.Error == null)
                         {
+                            RememberTurnPlan(stopAfterAct ? call.ArgumentsJson : "{}");
                             // Real reasoning_content wins; the act-args reason is the fallback.
                             lastReasoning ??= actReason;
                             acted = actOutcome.Action;
@@ -742,6 +768,7 @@ internal sealed partial class AgentLoop
     {
         string? acceptedAction = null;
         string? acceptedResponse = null;
+        _actStateJson = null;
         try
         {
             using var args = ParseArgs(argumentsJson);
@@ -808,6 +835,10 @@ internal sealed partial class AgentLoop
                 return (null, json, null, false, indexError.Message);
             }
 
+            _actStateJson = compactJson;
+            // Local patch: a legal move is narrated before it is played (no-op unless configured).
+            await NarrationGate.BeforeActAsync(action, cardIndex, targetIndex, optionIndex,
+                ReadString(args, "reason"), cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             var result = await _bridge.ActAsync(
                 action,

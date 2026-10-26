@@ -121,7 +121,28 @@ internal static partial class GameStateService
 
     public static bool CanClaimReward(IScreenContext? currentScreen)
     {
-        return GetRewardButtons(currentScreen).Any(button => button.IsEnabled);
+        return GetRewardButtons(currentScreen).Any(IsRewardClaimable);
+    }
+
+    /// <summary>
+    /// A potion reward cannot be taken while every potion slot is full: the game ignores the click
+    /// and the reward stays, so advertising it as claimable made the agent retry until play stopped
+    /// as failed. Report it unclaimable instead; the agent then skips it and proceeds.
+    /// </summary>
+    public static bool IsRewardClaimable(NRewardButton button)
+    {
+        if (!button.IsEnabled)
+        {
+            return false;
+        }
+
+        if (button.Reward is not PotionReward)
+        {
+            return true;
+        }
+
+        var player = GetLocalPlayer(RunManager.Instance.DebugOnlyGetState());
+        return player == null || player.PotionSlots.Any(slot => slot == null);
     }
 
     public static bool CanChooseRewardCard(IScreenContext? currentScreen)

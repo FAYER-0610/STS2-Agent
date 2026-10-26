@@ -9,6 +9,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\STS2AIAgent\Agent\AutoPlaySession.cs" Link="Agent\AutoPlaySession.cs" />
+    <Compile Include="..\STS2AIAgent\Agent\NarrationGate.cs" Link="Agent\NarrationGate.cs" />
     <Compile Include="..\STS2AIAgent\Game\ReflectedMemberResolver.cs" Link="Game\ReflectedMemberResolver.cs" />
     <Compile Include="..\STS2AIAgent\Game\StateBuildTiming.cs" Link="Game\StateBuildTiming.cs" />
     <Compile Include="..\STS2AIAgent\Agent\AutoPlayRecovery.cs" Link="Agent\AutoPlayRecovery.cs" />
@@ -54,6 +55,8 @@
     <Compile Include="..\STS2AIAgent\Agent\AgentLoop.Arguments.cs" Link="Agent\AgentLoop.Arguments.cs" />
     <Compile Include="..\STS2AIAgent\Agent\AgentLoop.Probes.cs" Link="Agent\AgentLoop.Probes.cs" />
     <Compile Include="..\STS2AIAgent\Agent\AgentLoop.Decision.cs" Link="Agent\AgentLoop.Decision.cs" />
+    <Compile Include="..\STS2AIAgent\Agent\AgentLoop.TurnPlan.cs" Link="Agent\AgentLoop.TurnPlan.cs" />
+    <Compile Include="..\STS2AIAgent\Agent\AgentLoop.Guidance.cs" Link="Agent\AgentLoop.Guidance.cs" />
     <Compile Include="..\STS2AIAgent\Agent\PlayPhases.cs" Link="Agent\PlayPhases.cs" />
     <Compile Include="..\STS2AIAgent\Agent\AgentTurnCanceledException.cs" Link="Agent\AgentTurnCanceledException.cs" />
     <Compile Include="..\STS2AIAgent\Agent\CompletionErrors.cs" Link="Agent\CompletionErrors.cs" />

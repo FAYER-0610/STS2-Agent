@@ -235,6 +235,16 @@ internal static partial class GameActionService
         }
 
         var selectedReward = rewardButtons[request.option_index.Value];
+        if (selectedReward.IsEnabled && !GameStateService.IsRewardClaimable(selectedReward))
+        {
+            throw new ApiException(409, "invalid_action", "Potion slots are full, so this potion reward cannot be taken. Skip it and proceed.", new
+            {
+                action = "claim_reward",
+                option_index = request.option_index,
+                reason = "potion_slots_full"
+            });
+        }
+
         if (!selectedReward.IsEnabled)
         {
             throw new ApiException(409, "invalid_action", "The selected reward is not claimable in the current state.", new

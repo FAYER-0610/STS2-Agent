@@ -531,6 +531,14 @@ internal static class TestRunner
         yield return ("TeammateStatus.UnreadableIsEmpty", () => Task.Run(TeammateStatusTests.NothingReadableProducesNoLineRatherThanAGuess));
         yield return ("TeammateStatus.UnknownHealthStaysUnknown", () => Task.Run(TeammateStatusTests.MissingHealthStaysUnknownRatherThanZero));
         yield return ("AgentLoop.PlayOnce", AgentLoopTests.PlayOnce_ExecutesSingleValidatedAct);
+        yield return ("AgentLoop.TurnPlanPlaysWithoutModel", AgentLoopTests.PlayOnce_PlaysTheRestOfAPlannedTurnWithoutTheModel);
+        yield return ("AgentLoop.TurnPlanDrawCancels", AgentLoopTests.PlayOnce_DrawnCardCancelsThePlan);
+        yield return ("AgentLoop.TurnPlanDeadTargetCancels", AgentLoopTests.PlayOnce_DeadTargetCancelsThePlan);
+        yield return ("AgentLoop.ViewerSuggestionSteers", AgentLoopTests.PlayOnce_ViewerSuggestionSteersTheDecision);
+        yield return ("AgentLoop.SuggestionEditsThePlan", AgentLoopTests.PlayOnce_NewSuggestionHandsThePlanBackToEdit);
+        yield return ("AgentLoop.DrawEditsThePlan", AgentLoopTests.PlayOnce_DrawnCardHandsThePlanBackToEdit);
+        yield return ("AgentLoop.SuggestionMidThought", AgentLoopTests.PlayOnce_SuggestionArrivingMidThoughtJoinsTheSameConversation);
+        yield return ("AgentTools.PlanSchemaInGameOnly", () => Task.Run(AgentLoopTests.PlanSchema_OnlyOnTheInGameAct));
         yield return ("AgentLoop.CrystalArgs", AgentLoopTests.PlayOnce_ForwardsCrystalSphereArguments);
         yield return ("AgentTools.CrystalSchema", () => Task.Run(AgentLoopTests.ActToolSchema_IncludesCrystalSphereArguments));
         yield return ("AgentLoop.NotActionable", AgentLoopTests.PlayOnce_SkipsWhenNotActionable);

@@ -4,36 +4,67 @@ namespace STS2AIAgent.Agent;
 
 internal static class AgentTools
 {
-    private static readonly object ActParameters = new
+    private static readonly object ActParameters = ActSchema(withPlan: false);
+
+    /// <summary>Local patch: the in-game act also takes the rest of a combat turn as a plan.</summary>
+    private static readonly object PlanActParameters = ActSchema(withPlan: true);
+
+    private static object ActSchema(bool withPlan)
     {
-        type = "object",
-        properties = new
+        var properties = new Dictionary<string, object>
         {
-            action = new { type = "string", description = "Action name from available_actions." },
-            card_index = new { type = "integer", description = "Hand card index for play_card." },
-            target_index = new { type = "integer", description = "Target index when the card or potion requires a target." },
-            option_index = new { type = "integer", description = "Option index for map/reward/shop/event/rest/lobby choices." },
-            x = new { type = "integer", description = "Crystal Sphere grid x-coordinate for crystal_clear_cell." },
-            y = new { type = "integer", description = "Crystal Sphere grid y-coordinate for crystal_clear_cell." },
-            tool = new
+            ["action"] = new { type = "string", description = "Action name from available_actions." },
+            ["card_index"] = new { type = "integer", description = "Hand card index for play_card." },
+            ["target_index"] = new { type = "integer", description = "Target index when the card or potion requires a target." },
+            ["option_index"] = new { type = "integer", description = "Option index for map/reward/shop/event/rest/lobby choices." },
+            ["x"] = new { type = "integer", description = "Crystal Sphere grid x-coordinate for crystal_clear_cell." },
+            ["y"] = new { type = "integer", description = "Crystal Sphere grid y-coordinate for crystal_clear_cell." },
+            ["tool"] = new
             {
                 type = "string",
                 @enum = new[] { "big", "small" },
                 description = "Crystal Sphere tool."
             },
-            reason = new
+            ["reason"] = new
             {
                 type = "string",
                 description = "One short sentence saying why you chose this action. Shown to the player as the decision's rationale."
             },
-            raw_state = new
+            ["raw_state"] = new
             {
                 type = "boolean",
                 description = "Return the full raw post-action state instead of the compact agent_view. Default false; only for a field the compact view does not carry."
             }
-        },
-        required = new[] { "action" }
-    };
+        };
+        if (withPlan)
+        {
+            properties["then"] = new
+            {
+                type = "array",
+                description = "Combat only, optional: the rest of this turn after this act, in order (end with end_turn if you mean to end the turn). The steps are played without asking you again until something new appears: a drawn or generated card, a choice screen, a dead target or an unplayable card cancels the remaining steps and you decide again from the new state.",
+                items = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        action = new { type = "string", @enum = new[] { "play_card", "end_turn" } },
+                        card_id = new { type = "string", description = "card_id of the hand card to play. Hand indexes shift as cards leave, so later steps name the card." },
+                        upgraded = new { type = "boolean", description = "True for the upgraded copy." },
+                        target_index = new { type = "integer", description = "Enemy index i from the current state, when the card needs a target." },
+                        reason = new { type = "string", description = "One short sentence for this step." }
+                    },
+                    required = new[] { "action" }
+                }
+            };
+        }
+
+        return new
+        {
+            type = "object",
+            properties,
+            required = new[] { "action" }
+        };
+    }
 
     private static readonly object CollectionItemParameters = new
     {
@@ -119,15 +150,17 @@ internal static class AgentTools
         Tool("wait_until_actionable", "Wait until a non-passive action is available, then return fresh compact state. Use during animations and screen transitions.", WaitParameters)
     };
 
-    public static readonly IReadOnlyList<LlmTool> Play = ReadOnly.Concat(new[]
+    public static readonly IReadOnlyList<LlmTool> Play = ReadOnly.Concat(new[] { Act(PlanActParameters) }).ToArray();
+
+    /// <summary>The MCP surface keeps the plain act: an external agent's act never carries a plan.</summary>
+    private static readonly IReadOnlyList<LlmTool> PlainPlay = ReadOnly.Concat(new[] { Act(ActParameters) }).ToArray();
+
+    private static LlmTool Act(object parameters) => new()
     {
-        new LlmTool
-        {
-            Name = "act",
-            Description = "Execute one legal game action. Only use names from the latest available_actions. Recompute indexes from the latest state, and attach a short reason so the player can see why. Returns the compact agent_view for the next decision unless raw_state is set.",
-            Parameters = ActParameters
-        }
-    }).ToArray();
+        Name = "act",
+        Description = "Execute one legal game action. Only use names from the latest available_actions. Recompute indexes from the latest state, and attach a short reason so the player can see why. Returns the compact agent_view for the next decision unless raw_state is set.",
+        Parameters = parameters
+    };
 
     public static readonly IReadOnlyList<LlmTool> Mcp = new[]
     {
@@ -139,7 +172,7 @@ internal static class AgentTools
         Tool("diff_state", "Compare two /state payloads and report the paths that differ. Use it to see exactly what an action changed.", DiffStateParameters),
         Tool("get_planner_briefing", "Read the current strategy, dual-layer/Jev flags, current-run summary and screen, plus up to five same-run Jev choices and their confidence trend. Missing run or scores remain null/empty. Use this read-only snapshot before adjusting the play strategy."),
         Tool("update_play_strategy", "Update the dual-layer play strategy the Jev executor follows from its next action; omitted fields keep their values. Only meaningful when dual-layer mode is on.", StrategyParameters)
-    }.Concat(Play).ToArray();
+    }.Concat(PlainPlay).ToArray();
 
     /// <summary>The parameters <c>update_play_strategy</c> accepts: the strategy fields, all optional.</summary>
     private static readonly object StrategyParameters = new

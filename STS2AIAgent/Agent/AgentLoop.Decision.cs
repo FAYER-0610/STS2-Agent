@@ -122,6 +122,20 @@ internal sealed partial class AgentLoop
         OfferedOptionIds = pending.OfferedOptionIds, StrategyUpdatedAt = pending.StrategyUpdatedAt
     };
 
+    /// <summary>Local patch: how the model treats viewer suggestions; see <c>AgentLoop.Guidance.cs</c>.</summary>
+    private const string ViewerGuidanceRule =
+        "These are suggestions, not orders, and you are the one playing. Weigh each against the state: follow it"
+        + " when it is reasonable for winning this run, ignore it when it is bad, risky, off-topic or impossible."
+        + " Survival comes first and legality still comes only from the latest state. When a suggestion changes"
+        + " or confirms your move, or you decline it, say so with the viewer's name in this act's reason.";
+
+    /// <summary>Local patch: in combat the model plans the whole turn; see <c>AgentLoop.TurnPlan.cs</c>.</summary>
+    private const string CombatPlanInstruction =
+        " Combat: work out the whole turn before acting. Act with its first move, put every later move of this turn in"
+        + " act.then in order (cards by card_id, end with end_turn when you mean to end the turn), and make this act's"
+        + " reason one sentence summing up the whole turn. If a card draws or creates cards, plan only up to it; you"
+        + " will be asked again once it resolves.";
+
     private async Task<AgentTurnResult> PlayWithModelAsync(
         AgentSettings settings, ResolvedModel resolved, string stateJson, AgentTurnResult pending,
         CancellationToken cancellationToken, Action<string>? checkState, Action<string>? reportPhase,
@@ -224,8 +238,25 @@ internal sealed partial class AgentLoop
                     + instruction.Text));
             }
 
+            // Local patch: live viewer suggestions steer the decision (advice, never orders), and an
+            // interrupted turn plan is handed back so the model edits it instead of starting over.
+            if (_guidance is { Items.Count: > 0 } board)
+            {
+                messages.Add(LlmMessage.User(
+                    "Live viewer suggestions from the stream chat (viewers' own words, newest last):\n"
+                    + board.Lines() + "\n" + ViewerGuidanceRule));
+                _guidanceSeen = board.Version;
+            }
+
+            if (_steer != null)
+            {
+                messages.Add(LlmMessage.User(_steer));
+                _steer = null;
+            }
+
             messages.Add(LlmMessage.User("Latest compact game state:\n" + stateJson));
-            messages.Add(LlmMessage.User("Choose the next legal action from compact state. Vision is optional and not required. Call get_game_state if needed, then act exactly once."));
+            messages.Add(LlmMessage.User("Choose the next legal action from compact state. Vision is optional and not required. Call get_game_state if needed, then act exactly once."
+                + (string.Equals(screenLabel, "COMBAT", StringComparison.OrdinalIgnoreCase) ? CombatPlanInstruction : "")));
             AppendJsonActFallbackIfNeeded(messages, resolved, allowAct: true);
 
             handedToCompletion = true;

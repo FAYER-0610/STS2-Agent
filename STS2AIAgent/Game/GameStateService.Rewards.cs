@@ -149,7 +149,7 @@ internal static partial class GameStateService
             index = index,
             reward_type = GetRewardTypeName(reward),
             description = reward?.Description.GetFormattedText() ?? string.Empty,
-            claimable = button.IsEnabled
+            claimable = IsRewardClaimable(button)
         };
     }
 

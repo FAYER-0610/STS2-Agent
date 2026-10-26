@@ -466,6 +466,197 @@ internal static class AgentLoopTests
         Assert.Contains("shown to the player", schema, StringComparison.OrdinalIgnoreCase);
     }
 
+    private const string PlanStrike = """{"i":0,"card_id":"STRIKE","playable":true,"target":"enemy","targets":[0]}""";
+
+    private static string PlanState(string hand, bool enemyAlive = true) =>
+        """{"screen":"COMBAT","run_id":"r1","turn":1,"available_actions":["play_card","end_turn"],"combat":{"hand":["""
+        + hand + """],"enemies":[{"i":0,"enemy_id":"JAW","alive":""" + (enemyAlive ? "true" : "false") + "}]}}";
+
+    private static string PlanCard(int index, string id, bool targeted = false) => targeted
+        ? $$"""{"i":{{index}},"card_id":"{{id}}","playable":true,"target":"enemy","targets":[0]}"""
+        : $$"""{"i":{{index}},"card_id":"{{id}}","playable":true,"targets":[]}""";
+
+    private static (FakeBridge Bridge, ScriptedClientFactory Factory, AgentLoop Loop) PlannedTurn(params string[] afterActs)
+    {
+        var bridge = new FakeBridge
+        {
+            CompactStateJson = PlanState(string.Join(",", PlanStrike, PlanCard(1, "DEFEND"), PlanCard(2, "BASH", true))),
+            AvailableActionsJson =
+                """[{"name":"play_card","requires_index":true,"requires_target":false},{"name":"end_turn","requires_index":false,"requires_target":false}]"""
+        };
+        foreach (var state in afterActs) bridge.AfterActStates.Enqueue(state);
+        var factory = new ScriptedClientFactory(new[]
+        {
+            new LlmCompletion
+            {
+                ToolCalls = new[]
+                {
+                    new LlmToolCall
+                    {
+                        Id = "call_act", Name = "act",
+                        ArgumentsJson = """{"action":"play_card","card_index":0,"target_index":0,"reason":"Strike, block, Bash, end.","then":[{"action":"play_card","card_id":"DEFEND"},{"action":"play_card","card_id":"BASH","target_index":0,"reason":"Vulnerable for next turn."},{"action":"end_turn"}]}"""
+                    }
+                }
+            }
+        });
+        return (bridge, factory, new AgentLoop(bridge, factory, AgentSettings.CreateDefault));
+    }
+
+    public static async Task PlayOnce_PlaysTheRestOfAPlannedTurnWithoutTheModel()
+    {
+        var (bridge, factory, loop) = PlannedTurn(
+            PlanState(string.Join(",", PlanCard(0, "DEFEND"), PlanCard(1, "BASH", true))),
+            PlanState(PlanCard(0, "BASH", true)),
+            PlanState(""),
+            PlanState(""));
+
+        var first = await loop.PlayOnceAsync(CancellationToken.None);
+        Assert.Equal("play_card", first.Acted);
+        Assert.Equal(1, factory.Requests.Count);
+
+        var second = await loop.PlayOnceAsync(CancellationToken.None);
+        Assert.Equal("play_card", second.Acted);
+        Assert.Equal(0, bridge.LastCardIndex);
+        Assert.Equal(0, second.RequestsSpent);
+        Assert.Contains("2/4", second.Reasoning ?? "");
+
+        var third = await loop.PlayOnceAsync(CancellationToken.None);
+        Assert.Equal(0, bridge.LastCardIndex);
+        Assert.Equal(0, bridge.LastTargetIndex);
+        Assert.Contains("Vulnerable", third.Reasoning ?? "");
+
+        var fourth = await loop.PlayOnceAsync(CancellationToken.None);
+        Assert.Equal("end_turn", fourth.Acted);
+        Assert.Equal(1, factory.Requests.Count);
+        Assert.Equal(4, bridge.ActCalls);
+
+        await loop.PlayOnceAsync(CancellationToken.None);
+        Assert.True(factory.Requests.Count > 1, "The plan is spent; the next decision is the model's.");
+    }
+
+    public static async Task PlayOnce_DrawnCardCancelsThePlan()
+    {
+        var (bridge, factory, loop) = PlannedTurn(
+            PlanState(string.Join(",", PlanCard(0, "DEFEND"), PlanCard(1, "BASH", true), PlanCard(2, "ANGER", true))));
+
+        await loop.PlayOnceAsync(CancellationToken.None);
+        await loop.PlayOnceAsync(CancellationToken.None);
+
+        Assert.True(factory.Requests.Count > 1, "A drawn card sends the decision back to the model.");
+        Assert.Equal(1, bridge.ActCalls);
+    }
+
+    public static async Task PlayOnce_DeadTargetCancelsThePlan()
+    {
+        var (bridge, factory, loop) = PlannedTurn(
+            PlanState(string.Join(",", PlanCard(0, "DEFEND"), PlanCard(1, "BASH", true)), enemyAlive: false),
+            PlanState(PlanCard(0, "BASH", true), enemyAlive: false));
+
+        await loop.PlayOnceAsync(CancellationToken.None);
+        var defend = await loop.PlayOnceAsync(CancellationToken.None);
+        Assert.Equal(0, defend.RequestsSpent);
+        await loop.PlayOnceAsync(CancellationToken.None);
+
+        Assert.True(factory.Requests.Count > 1, "A dead target sends the decision back to the model.");
+        Assert.Equal(2, bridge.ActCalls);
+    }
+
+    private static ViewerGuidance Board(long version, params (string Name, string Text)[] items) =>
+        new(version, items.Select(item => (item.Name, item.Text, 5)).ToArray());
+
+    private static bool Said(LlmRequest? request, string text) =>
+        request!.Messages.Any(message => message.Content?.Contains(text) == true);
+
+    public static async Task PlayOnce_ViewerSuggestionSteersTheDecision()
+    {
+        var bridge = new FakeBridge();
+        var factory = new ScriptedClientFactory(new[]
+        {
+            new LlmCompletion
+            {
+                ToolCalls = new[] { new LlmToolCall { Id = "a", Name = "act", ArgumentsJson = """{"action":"play_card","card_index":0}""" } }
+            }
+        });
+        var loop = new AgentLoop(bridge, factory, AgentSettings.CreateDefault)
+        {
+            GuidanceSource = _ => Task.FromResult<ViewerGuidance?>(Board(1, ("小明", "先打左边那只")))
+        };
+
+        await loop.PlayOnceAsync(CancellationToken.None);
+
+        Assert.True(Said(factory.LastRequest, "小明 (5s ago): 先打左边那只"), "The suggestion reaches the prompt.");
+        Assert.True(Said(factory.LastRequest, "not orders"), "It is framed as advice.");
+    }
+
+    public static async Task PlayOnce_NewSuggestionHandsThePlanBackToEdit()
+    {
+        var (bridge, factory, loop) = PlannedTurn(
+            PlanState(string.Join(",", PlanCard(0, "DEFEND"), PlanCard(1, "BASH", true))));
+        ViewerGuidance? board = null;
+        loop.GuidanceSource = _ => Task.FromResult(board);
+
+        await loop.PlayOnceAsync(CancellationToken.None);
+        board = Board(1, ("阿花", "别防了，全力打"));
+        await loop.PlayOnceAsync(CancellationToken.None);
+
+        Assert.Equal(1, bridge.ActCalls);                       // The planned DEFEND waited for the model.
+        Assert.True(factory.Requests.Count > 1, "The suggestion goes to the model.");
+        var steered = factory.Requests[1];
+        Assert.True(Said(steered, "阿花"), "It sees the suggestion.");
+        Assert.True(Said(steered, "Steps you had not played yet: play DEFEND; play BASH -> enemy 0; end_turn"), "It sees its own plan.");
+        Assert.True(Said(steered, "Strike, block, Bash, end."), "It sees what it planned.");
+    }
+
+    public static async Task PlayOnce_DrawnCardHandsThePlanBackToEdit()
+    {
+        var (_, factory, loop) = PlannedTurn(
+            PlanState(string.Join(",", PlanCard(0, "DEFEND"), PlanCard(1, "BASH", true), PlanCard(2, "ANGER", true))));
+
+        await loop.PlayOnceAsync(CancellationToken.None);
+        await loop.PlayOnceAsync(CancellationToken.None);
+
+        Assert.True(Said(factory.Requests[1], "new cards are in your hand"), "The model is told why.");
+        Assert.True(Said(factory.Requests[1], "play DEFEND"), "The model edits its own plan.");
+    }
+
+    public static async Task PlayOnce_SuggestionArrivingMidThoughtJoinsTheSameConversation()
+    {
+        var bridge = new FakeBridge();
+        var factory = new ScriptedClientFactory(new[]
+        {
+            new LlmCompletion { ToolCalls = new[] { new LlmToolCall { Id = "s", Name = "get_game_state", ArgumentsJson = "{}" } } },
+            new LlmCompletion
+            {
+                ToolCalls = new[] { new LlmToolCall { Id = "a", Name = "act", ArgumentsJson = """{"action":"play_card","card_index":0}""" } }
+            }
+        });
+        var reads = 0;
+        var loop = new AgentLoop(bridge, factory, AgentSettings.CreateDefault)
+        {
+            GuidanceSource = _ => Task.FromResult(++reads == 1 ? null : Board(4, ("小明", "用药水")))
+        };
+
+        var result = await loop.PlayOnceAsync(CancellationToken.None);
+
+        Assert.Equal("play_card", result.Acted);
+        Assert.Equal(2, factory.Requests.Count);
+        Assert.False(Said(factory.Requests[0], "用药水"), "Nothing was suggested yet.");
+        Assert.True(Said(factory.Requests[1], "arrived while you were thinking"), "The suggestion joins the running decision.");
+        Assert.True(Said(factory.Requests[1], "get_game_state") || factory.Requests[1].Messages.Any(m => m.Role == "tool"),
+            "The earlier reasoning and tool round are kept.");
+    }
+
+    public static void PlanSchema_OnlyOnTheInGameAct()
+    {
+        var play = JsonSerializer.Serialize(AgentTools.Play.Single(tool => tool.Name == "act").Parameters);
+        var mcp = JsonSerializer.Serialize(AgentTools.Mcp.Single(tool => tool.Name == "act").Parameters);
+
+        Assert.Contains("\"then\"", play);
+        Assert.Contains("\"card_id\"", play);
+        Assert.False(mcp.Contains("\"then\""), "The MCP act must not advertise a plan it would ignore.");
+        Assert.Contains("\"reason\"", mcp);
+    }
+
     public static async Task PlayOnce_SkipsWhenNotActionable()
     {
         var bridge = new FakeBridge { Actionable = false };
@@ -1299,6 +1490,12 @@ internal static class AgentLoopTests
 
         public string? LastAction { get; private set; }
 
+        public int? LastCardIndex { get; private set; }
+
+        public int? LastTargetIndex { get; private set; }
+
+        public Queue<string> AfterActStates { get; } = new();
+
         public int? LastX { get; private set; }
 
         public int? LastY { get; private set; }
@@ -1363,10 +1560,16 @@ internal static class AgentLoopTests
         {
             ActCalls++;
             LastAction = action;
+            LastCardIndex = cardIndex;
+            LastTargetIndex = targetIndex;
             LastX = x;
             LastY = y;
             LastTool = tool;
-            if (AfterActCompactStateJson != null)
+            if (AfterActStates.Count > 0)
+            {
+                CompactStateJson = AfterActStates.Dequeue();
+            }
+            else if (AfterActCompactStateJson != null)
             {
                 CompactStateJson = AfterActCompactStateJson;
             }

@@ -141,6 +141,8 @@ one action runs at a time.
 - `STS2AIAgent/Agent/AgentLoop.cs` — `ChatAsync`, `PlayOnceAsync` (check state → `WaitUntilActionableAsync(20 s)` → Jev or LLM), `CompleteWithToolsAsync` (bounded tool rounds, `MaxToolRounds = 8`), `ExecuteActAsync`, `ExecuteReadToolAsync`, `TestConfiguredRolesAsync`.
 - `STS2AIAgent/Agent/AgentLoop.Decision.cs` — `TryDecideWithJevAsync` (budget pre-check → snapshot → decide → execute) and `PlayWithModelAsync` (prompt assembly; **the prompt cache order is load-bearing**: stable prefix first, live state last).
 - `STS2AIAgent/Agent/AgentLoop.Arguments.cs` — pure tool-argument parsers.
+- `STS2AIAgent/Agent/AgentLoop.TurnPlan.cs` — local patch: keeps a combat act's `then` list as the turn plan and plays its next step without a model call while the hand holds no new card, no choice is open and the step is still legal; an interrupted plan is handed back to the model to edit.
+- `STS2AIAgent/Agent/AgentLoop.Guidance.cs` — local patch: reads the narrator's viewer-suggestion board and steers the running decision with it (decision start, before planned steps, between tool rounds).
 - `STS2AIAgent/Agent/AgentLoop.Probes.cs` — `CreateClient` (per-request timeout from live settings), run-id and planning-state probes.
 
 ### Files — AgentRuntime (singleton; one partial per concern)
@@ -160,6 +162,7 @@ one action runs at a time.
 ### Files — policies and pure logic (offline-tested; must stay free of Godot/game types)
 - `STS2AIAgent/Agent/AutoPlayRecovery.cs` — the turn driver (`RunAsync`: turn gate → turn → commit/receipt → `Observe` → backoff or stop) and the retry/no-progress policy. Waits on the **player** (companion map vote) never run the 150 s stuck clock.
 - `STS2AIAgent/Agent/AutoPlaySession.cs` — one loop task: `TryStart`, `RequestPause`, `Phase` (`running`/`stopping`/`paused`).
+- `STS2AIAgent/Agent/NarrationGate.cs` — local patch: before a validated act, POSTs it to a loopback narrator named in `%APPDATA%\STS2AIAgent\narrator.txt` and waits (max 20 s) for it to finish speaking; off when the file is absent, open for 30 s after any failure.
 - `STS2AIAgent/Agent/NoProgressPolicy.cs` — limits (`WaitingForGameLimit = 150 s`, `UnsettledLimit`, repeat limit) and the state `Fingerprint`.
 - `STS2AIAgent/Agent/StopKindPolicy.cs` — stop message → `budget`/`run_end`/`config`/`network`/`failed`.
 - `STS2AIAgent/Agent/SessionBudgetGuard.cs` — token and request caps; `CheckBudget(extraRequests, extraTokens)` runs before every dispatch.
